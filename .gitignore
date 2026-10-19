@@ -135,9 +135,13 @@ node_modules/
 ui/.next/
 .next/
 out/
+*.tsbuildinfo
 
 # 本地调试脚本 / 探测输出（不属于项目代码）
 .workbuddy/
+
+# 本项目统一使用 npm（见 README），pnpm lock 不纳入版本控制
+ui/pnpm-lock.yaml
 
 # env 模板必须放行，供使用者复制成 .env 后填 Key
 !**/.env.example
