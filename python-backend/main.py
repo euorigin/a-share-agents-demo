@@ -10,34 +10,13 @@ from dotenv import load_dotenv
 # Load OPENAI_API_KEY etc. from python-backend/.env before anything else runs.
 load_dotenv()
 
-# --- 可选：指向 OpenAI 兼容中转站 -------------------------------------------
-# .env 中设置 OPENAI_BASE_URL=你的中转地址/v1 即可生效。
-# 若中转站不支持 /v1/responses（只支持 chat/completions），再设置：
-#   OPENAI_API_MODE=chat_completions
-_base_url = os.environ.get("OPENAI_BASE_URL")
-if _base_url:
-    from agents import set_default_openai_api, set_default_openai_client
-    from openai import AsyncOpenAI
+# 配置 OpenAI 客户端 + 关闭遥测。
+# 抽到 stock/openai_setup.py 是因为评测入口（evaluation/run.py）也要用同一套配置 ——
+# 只要有一边漏配 OPENAI_BASE_URL，请求就会打到官方端点，报出难以理解的 500。
+# 必须早于下面所有 agents / stock 相关的 import。
+from stock.openai_setup import configure_openai
 
-    set_default_openai_client(
-        AsyncOpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY"),
-            base_url=_base_url,
-        )
-    )
-    if os.environ.get("OPENAI_API_MODE", "responses").strip().lower() == "chat_completions":
-        set_default_openai_api("chat_completions")
-
-# --- 关闭 Agents SDK 的遥测上报 ---------------------------------------------
-# SDK 默认把 trace 发到 https://api.openai.com/v1/traces/ingest，这个端点是硬编码的，
-# 不会跟随 OPENAI_BASE_URL。本项目走第三方中转，上报必然失败，后台每次重试 3 次并刷屏：
-#   [non-fatal] Tracing request failed  ×N
-#   [non-fatal] Tracing: max retries reached, giving up on this batch.
-# 这些日志只是遥测，不影响对话功能，直接关掉以免污染排障输出。
-# 注意：当前 SDK 版本不读取 OPENAI_TRACING_DISABLED 环境变量，必须调用函数。
-from agents import set_tracing_disabled
-
-set_tracing_disabled(True)
+configure_openai()
 
 from chatkit.server import StreamingResult
 from chatkit.types import (

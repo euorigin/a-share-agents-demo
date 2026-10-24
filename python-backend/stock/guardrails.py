@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -66,6 +67,9 @@ guardrail_agent = Agent(
         "Important: You are ONLY evaluating the most recent user message, not any of the previous messages from the chat history. "
         "It is OK for the customer to send messages such as 'Hi' or 'OK' or any other messages that are at all conversational, "
         "but if the response is non-conversational, it must be somewhat related to A股行情或交易规则。"
+        "注意：用户询问某只 A股股票「能不能买 / 值不值得买 / 该不该卖 / 给个建议」这类问题，"
+        "属于本系统的业务范围，应判定为相关（is_relevant=True）——由下游 Agent 陈述公开数据并提示风险，"
+        "不要在这一层拦掉。只有与 A股完全无关的请求（写诗、写代码、闲聊时事等）才算不相关。"
         "Return is_relevant=True if it is, else False, plus a brief reasoning. "
         '输出格式：只输出一个 JSON 对象，形如 {"reasoning": "简短理由", "is_relevant": true}。'
         "不要输出 JSON 以外的任何文字。"
@@ -73,17 +77,30 @@ guardrail_agent = Agent(
 )
 
 
+async def _run_guardrail(agent: Agent, input_text: str | list[TResponseInputItem], context: Any) -> Any:
+    """跑一次护栏判定。
+
+    用 `run_streamed` 而不是 `run`：部分 OpenAI 兼容中转站在非流式响应里会把 `usage`
+    字段返回成 null，SDK 的非流式分支会把它原样塞进 `Usage` 触发 pydantic 校验错误，
+    导致整轮对话直接失败（流式分支有 `or 0` 兜底）。
+    """
+    result = Runner.run_streamed(agent, input_text, context=context)
+    async for _event in result.stream_events():
+        pass
+    return result.final_output
+
+
 @input_guardrail(name="Relevance Guardrail")
 async def relevance_guardrail(
     context: RunContextWrapper[None], agent: Agent, input: str | list[TResponseInputItem]
 ) -> GuardrailFunctionOutput:
     """Guardrail to check if input is relevant to the A-share stock domain."""
-    result = await Runner.run(
+    final_output = await _run_guardrail(
         guardrail_agent,
         input,
-        context=context.context.state if hasattr(context.context, "state") else context.context,
+        context.context.state if hasattr(context.context, "state") else context.context,
     )
-    final = _extract_structured_output(result.final_output, RelevanceOutput)
+    final = _extract_structured_output(final_output, RelevanceOutput)
     if final is None:
         # 兜底放行：模型没按格式输出时，不应该让整轮对话失败
         final = RelevanceOutput(reasoning="护栏输出无法解析，已放行", is_relevant=True)
@@ -120,12 +137,12 @@ async def jailbreak_guardrail(
     context: RunContextWrapper[None], agent: Agent, input: str | list[TResponseInputItem]
 ) -> GuardrailFunctionOutput:
     """Guardrail to detect jailbreak attempts."""
-    result = await Runner.run(
+    final_output = await _run_guardrail(
         jailbreak_guardrail_agent,
         input,
-        context=context.context.state if hasattr(context.context, "state") else context.context,
+        context.context.state if hasattr(context.context, "state") else context.context,
     )
-    final = _extract_structured_output(result.final_output, JailbreakOutput)
+    final = _extract_structured_output(final_output, JailbreakOutput)
     if final is None:
         final = JailbreakOutput(reasoning="护栏输出无法解析，已放行", is_safe=True)
     return GuardrailFunctionOutput(output_info=final, tripwire_triggered=not final.is_safe)
